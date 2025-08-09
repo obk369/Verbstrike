@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>VerbStrike Dashboard PWA Slim</title>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    .tabs { display: flex; background: #333; }
+    .tab { flex: 1; padding: 0.8em; text-align: center; background: #444; color: white; cursor: pointer; }
+    .tab:hover { background: #555; }
+    .active { background: #007acc !important; }
+    .content { display: none; padding: 1em; }
+    .content.active { display: block; }
+    .btn { flex: 1; border: none; border-radius: 10px; color: #fff; font-size: 16px; padding: 14px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+    .btn.upload { background: #0b5; }
+    .btn.speak { background: #06c; }
+    .btn.next { background: #222; }
+    #countdown { font-size: 28px; margin: 6px 0; }
+    #episodeList { border: 1px solid #ddd; padding: 10px; border-radius: 10px; max-height: 200px; overflow: auto; }
+    #trainCard { margin-top: 12px; padding: 14px; border: 1px solid #ddd; border-radius: 10px; }
+    #origLine { font-size: 18px; margin-bottom: 6px; }
+    #userLine { color: #777; margin-bottom: 6px; }
+    #diffLine { color: #c00; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="tabs">
+    <div class="tab active" onclick="showTab('verb')">🗣️ 발화 훈련</div>
+    <div class="tab" onclick="showTab('grammar')">🧠 문법 훈련</div>
+    <div class="tab" onclick="showTab('listening')">🎧 청취 훈련</div>
+    <div class="tab" onclick="showTab('report')">📊 결과 리포트</div>
+    <div class="tab" onclick="showTab('settings')">⚙️ 사용자 설정</div>
+  </div>
+
+  <div id="verb" class="content active">
+    <h2>🗣️ VerbStrike 실전 발화 훈련</h2>
+    <div style="display:flex; gap:10px; margin:10px 0;">
+      <label class="btn upload">📦 자막 업로드<input id="fileInput" type="file" accept=".zip,.srt,.smi" multiple style="display:none" /></label>
+      <button class="btn speak" id="holdToSpeak">🎙 말하기</button>
+      <button class="btn next" id="nextScene">➡️ 다음</button>
+    </div>
+    <div id="countdown">Ready</div>
+    <div id="episodeList"></div>
+    <div id="trainCard">
+      <div id="origLine">원문 자막이 여기에 표시됩니다</div>
+      <div id="userLine">(사용자 발화)</div>
+      <div id="diffLine">(차이 하이라이트)</div>
+    </div>
+  </div>
+
+  <div id="grammar" class="content"><p>[준비 중]</p></div>
+  <div id="listening" class="content"><p>[준비 중]</p></div>
+  <div id="report" class="content"><p>[준비 중]</p></div>
+  <div id="settings" class="content"><p>[준비 중]</p></div>
+
+  <script>
+    function showTab(id){
+      document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+      document.querySelectorAll('.content').forEach(c=>c.classList.remove('active'));
+      document.querySelector(`.tab[onclick*="${id}"]`).classList.add('active');
+      document.getElementById(id).classList.add('active');
+    }
+
+    function detectEnglish(text){
+      const hasKR = /[\u3131-\uD79D]/.test(text);
+      const hasEN = /[A-Za-z]/.test(text);
+      if(hasEN && !hasKR) return 'EN';
+      if(hasEN && hasKR) return 'MIX';
+      return 'KR';
+    }
+
+    function parseSRT(txt){
+      return txt.split(/\n\n+/)
+        .map(b=> b.replace(/\r/g,'').split('\n').filter(l=>!/^\d+$/.test(l) && !/\d{2}:\d{2}:\d{2},\d{3}/.test(l)).join(' ').trim())
+        .filter(Boolean);
+    }
+
+    function parseSMI(txt){
+      const out=[]; const rx=/<p[^>]*>([\s\S]*?)<\/p>/gi; let m;
+      while((m=rx.exec(txt))){ const line=m[1].replace(/<[^>]+>/g,'').trim(); if(line) out.push(line); }
+      return out;
+    }
+
+    function cleanLines(lines){
+      const seen=new Set();
+      return lines.filter(t=>{
+        if(/^(hmm+|ugh+|uh+|ah+|oh+)[.!?]*$/i.test(t)) return false;
+        const key=t.toLowerCase();
+        if(seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+
+    function diffWords(a,b){
+      const A=a.split(/\s+/), B=b.split(/\s+/);
+      const set=new Set(B);
+      return A.map(w=> set.has(w)? w : `<mark>${w}</mark>`).join(' ');
+    }
+
+    function buzz(ms=160){ if(navigator.vibrate){ navigator.vibrate([40,40,40,40,ms]); } }
+
+    let episodes=[];
+    function setLine(text){
+      document.getElementById('origLine').textContent=text;
+      document.getElementById('userLine').textContent='';
+      document.getElementById('diffLine').innerHTML='';
+    }
+
+    function nextLine(){
+      const r=document.querySelector('input[name="ep"]:checked');
+      const idx=r?parseInt(r.value,10):0;
+      const ep=episodes[idx];
+      if(!ep) return;
+      ep._ptr=(ep._ptr||0)+1;
+      const line=ep.lines[ep._ptr % ep.lines.length];
+      setLine(line);
+    }
+
+    async function startCountdown(sec=2){
+      let n=sec; const el=document.getElementById('countdown');
+      const t=setInterval(()=>{
+        el.textContent=n; buzz(200);
+        n--;
+        if(n<0){ clearInterval(t); el.textContent='Speak!'; buzz(260); }
+      },1000);
+    }
+
+    async function captureSpeechMock(){
+      const said=prompt('말한 문장을 입력 (음성 엔진 연결 전 임시)')||'';
+      return said.trim();
+    }
+
+    async function handleFiles(files){
+      episodes=[]; const listEl=document.getElementById('episodeList');
+      listEl.innerHTML='분석 중…';
+      for(const f of files){
+        const ext=f.name.split('.').pop().toLowerCase();
+        if(ext==='zip'){
+          const buf=await f.arrayBuffer();
+          const zip=await JSZip.loadAsync(buf);
+          const entries=Object.values(zip.files).filter(z=>!z.dir && /\.(srt|smi)$/i.test(z.name));
+          for(const e of entries){
+            const txt=await e.async('string');
+            const lang=detectEnglish(txt);
+            if(lang==='EN' || lang==='MIX'){
+              const lines=cleanLines((/\.srt$/i.test(e.name)? parseSRT(txt): parseSMI(txt)));
+              if(lines.length) episodes.push({name:e.name.split('/').pop(), lines});
+            }
+          }
+        } else if(ext==='srt' || ext==='smi'){
+          const txt=await f.text();
+          const lang=detectEnglish(txt);
+          if(lang==='EN' || lang==='MIX'){
+            const lines=cleanLines((ext==='srt'? parseSRT(txt): parseSMI(txt)));
+            if(lines.length) episodes.push({name:f.name, lines});
+          }
+        }
+      }
+      if(!episodes.length){ listEl.innerHTML='영어 자막이 감지되지 않았습니다.'; return; }
+      const html=episodes.map((e,i)=>`<div><label><input type=\"radio\" name=\"ep\" value=\"${i}\" ${i===0?'checked':''}/> ${e.name} <small>(${e.lines.length} lines)</small></label></div>`).join('');
+      listEl.innerHTML=html;
+      setLine(episodes[0].lines[0]||'Ready');
+    }
+
+    document.addEventListener('DOMContentLoaded',()=>{
+      document.getElementById('fileInput').addEventListener('change',e=> handleFiles([...e.target.files]));
+      document.getElementById('nextScene').addEventListener('click',()=> nextLine());
+      document.getElementById('holdToSpeak').addEventListener('touchstart',()=> startCountdown(2), {passive:true});
+      document.getElementById('holdToSpeak').addEventListener('click',async()=>{
+        await startCountdown(2);
+        const said=await captureSpeechMock();
+        if(!said) return;
+        const orig=document.getElementById('origLine').textContent;
+        document.getElementById('userLine').textContent=said;
+        document.getElementById('diffLine').innerHTML=diffWords(orig, said);
+      });
+    });
+  </script>
+</body>
+</html>
