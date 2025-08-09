@@ -113,9 +113,11 @@
 
   // 파일 처리(Zip/SRT/SMI)
   async function handleFiles(files){
+    if (!files || !files.length) { console.warn('No files'); return; } // ⬅️ null guard
     episodes=[]; const listEl=document.getElementById('episodeList');
     listEl.innerHTML='분석 중…';
     for(const f of files){
+      if (!f) { console.warn('Empty file'); continue; }                // ⬅️ null guard
       const ext=f.name.split('.').pop().toLowerCase();
       if(ext==='zip'){
         const buf=await f.arrayBuffer(); const zip=await JSZip.loadAsync(buf);
@@ -139,7 +141,14 @@
 
   // 이벤트 연결
   document.addEventListener('DOMContentLoaded',()=>{
-    document.getElementById('fileInput').addEventListener('change',e=> handleFiles([...e.target.files]));
+    const input = document.getElementById('fileInput');
+    if (input){
+      input.addEventListener('change', (e)=>{
+        const files = [...(e.target.files||[])];
+        if (!files.length) { console.warn('No file selected'); return; } // ⬅️ null guard
+        handleFiles(files);
+      });
+    }
     document.getElementById('nextScene').addEventListener('click',()=>{ nextLine(); startCountdown(3); });
     document.getElementById('holdToSpeak').addEventListener('click',async()=>{
       await startCountdown(3);
