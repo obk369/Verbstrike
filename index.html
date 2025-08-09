@@ -2,6 +2,9 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
   <title>VerbStrike 실전 발화 훈련</title>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
@@ -37,7 +40,7 @@
     </div>
 
     <!-- 발화 훈련 탭 -->
-    <div id="speakTab" class="content active">
+    <div id="speakTab" class="content" style="display:block">
       <div class="panel">
         <div class="row">
           <input id="fileInput" class="hidden" type="file" multiple accept=".zip,.srt,.smi" />
@@ -85,9 +88,14 @@
     }
 
     // === Utils ===
-    const hasKR = t=> /[\u3131-\uD79D]/.test(t);
+    const hasKR = t=> /[\u3131-\uD79D]/g.test(t);
     const hasEN = t=> /[A-Za-z]/.test(t);
-    const asciiRatio = t=>{ const m=(t.match(/[A-Za-z]/g)||[]).length; const n=(t.replace(/\s+/g,'').match(/./g)||[]).length||1; return m/n; };
+    const stripKR = t=> t.replace(/[\u3131-\uD79D]/g,'');
+    const asciiRatio = t=>{
+      const m=(t.match(/[A-Za-z]/g)||[]).length;
+      const n=(t.replace(/\s+/g,'').match(/./g)||[]).length||1;
+      return m/n;
+    };
 
     // SRT / SMI 파서
     function parseSRT(txt){
@@ -104,9 +112,11 @@
       while((m=rx.exec(txt))){
         const klass=(m[1]||'').toLowerCase();
         const line=(m[2]||'').replace(/<[^>]+>/g,'').trim();
-        if(!line) continue; any.push(line); if(klass.includes('encc')) en.push(line);
+        if(!line) continue;
+        any.push(line);
+        if(klass.includes('encc')) en.push(line);
       }
-      return en.length? en : any; // ENCC 우선
+      return en.length? en : any; // ENCC 우선, 없으면 전체 반환
     }
 
     // 정제
@@ -119,13 +129,19 @@
       });
     }
 
+    // 영어 판정(완화 버전): 한글 제거 후 영문비율 0.30+, 그리고 영문자 존재
+    function isEnglishish(s){
+      const base = stripKR(s);
+      return hasEN(base) && asciiRatio(base) >= 0.30;
+    }
+
     // 영어만 추출
     function extractEnglishFromSRT(txt){
-      const lines=parseSRT(txt).filter(s=> hasEN(s) && !hasKR(s) && asciiRatio(s)>0.55);
+      const lines = parseSRT(txt).filter(isEnglishish);
       return cleanLines(lines);
     }
     function extractEnglishFromSMI(txt){
-      const lines=parseSMI(txt).filter(s=> hasEN(s) && !hasKR(s) && asciiRatio(s)>0.55);
+      const lines = parseSMI(txt).filter(isEnglishish);
       return cleanLines(lines);
     }
 
@@ -136,10 +152,10 @@
     function buzz(ms=220){ if(navigator.vibrate){ navigator.vibrate([60,60,60,60,ms]); } }
 
     // 상태
-    let episodes=[]; let autoTimer=null; const AUTO_GAP=3000; // 3초 간격
+    let episodes=[]; let autoTimer=null; const AUTO_GAP=3000; // 3초
 
     function setLine(text){
-      document.getElementById('origLine').textContent=text;
+      document.getElementById('origLine').textContent=text||'';
       document.getElementById('userLine').textContent='';
       document.getElementById('diffLine').innerHTML='';
     }
@@ -148,22 +164,38 @@
       const idx=r?parseInt(r.value,10):0; const ep=episodes[idx]; if(!ep) return;
       ep._ptr=(ep._ptr||0)+1; const line=ep.lines[ep._ptr % ep.lines.length]; setLine(line);
     }
-    async function startCountdown(sec=3){ let n=sec; const el=document.getElementById('countdown'); const t=setInterval(()=>{ el.textContent=n; buzz(240); n--; if(n<0){ clearInterval(t); el.textContent='Speak!'; buzz(320);} },1000); }
+    async function startCountdown(sec=3){
+      let n=sec; const el=document.getElementById('countdown');
+      const t=setInterval(()=>{ el.textContent=n; buzz(240); n--; if(n<0){ clearInterval(t); el.textContent='Speak!'; buzz(320);} },1000);
+    }
     async function captureSpeechMock(){ const said=prompt('말한 문장을 입력 (음성 엔진 연결 전 임시)')||''; return said.trim(); }
 
-    function startAutoLoop(){ if(autoTimer) clearInterval(autoTimer); setLine(episodes[0].lines[0]||'Ready'); startCountdown(3); autoTimer=setInterval(()=>{ nextLine(); startCountdown(3); }, AUTO_GAP); }
+    function startAutoLoop(){
+      if(autoTimer) clearInterval(autoTimer);
+      setLine(episodes[0]?.lines[0]||'Ready');
+      startCountdown(3);
+      autoTimer=setInterval(()=>{ nextLine(); startCountdown(3); }, AUTO_GAP);
+    }
 
     // 파일 처리
     async function handleFiles(files){
       if(!files||!files.length){ console.warn('No files'); return; }
       episodes=[]; const listEl=document.getElementById('episodeList'); listEl.textContent='분석 중…';
-      for(const f of files){ if(!f) continue; const ext=f.name.split('.').pop().toLowerCase();
+      for(const f of files){
+        if(!f) continue;
+        const ext=f.name.split('.').pop().toLowerCase();
         if(ext==='zip'){
           const buf=await f.arrayBuffer(); const zip=await JSZip.loadAsync(buf);
           const entries=Object.values(zip.files).filter(z=>!z.dir && /\.(srt|smi)$/i.test(z.name));
-          for(const e of entries){ const txt=await e.async('string'); let lines=[]; if(/\.srt$/i.test(e.name)) lines=extractEnglishFromSRT(txt); else lines=extractEnglishFromSMI(txt); if(lines.length) episodes.push({name:e.name.split('/').pop(), lines}); }
+          for(const e of entries){
+            const txt=await e.async('string'); let lines=[];
+            if(/\.srt$/i.test(e.name)) lines=extractEnglishFromSRT(txt); else lines=extractEnglishFromSMI(txt);
+            if(lines.length) episodes.push({name:e.name.split('/').pop(), lines});
+          }
         }else if(ext==='srt'||ext==='smi'){
-          const txt=await f.text(); let lines=[]; if(ext==='srt') lines=extractEnglishFromSRT(txt); else lines=extractEnglishFromSMI(txt); if(lines.length) episodes.push({name:f.name, lines});
+          const txt=await f.text(); let lines=[];
+          if(ext==='srt') lines=extractEnglishFromSRT(txt); else lines=extractEnglishFromSMI(txt);
+          if(lines.length) episodes.push({name:f.name, lines});
         }
       }
       if(!episodes.length){ listEl.textContent='영어 자막이 감지되지 않았습니다.'; return; }
@@ -174,9 +206,21 @@
     // 이벤트
     document.addEventListener('DOMContentLoaded',()=>{
       const input=document.getElementById('fileInput');
-      if(input){ input.addEventListener('change',e=>{ const files=[...(e.target.files||[])]; if(!files.length){ console.warn('No file selected'); return;} handleFiles(files); }); }
+      if(input){
+        input.addEventListener('change',e=>{
+          const files=[...(e.target.files||[])];
+          if(!files.length){ console.warn('No file selected'); return;}
+          handleFiles(files);
+        });
+      }
       document.getElementById('nextScene').addEventListener('click',()=>{ nextLine(); startCountdown(3); });
-      document.getElementById('holdToSpeak').addEventListener('click',async()=>{ await startCountdown(3); const said=await captureSpeechMock(); if(!said) return; const orig=document.getElementById('origLine').textContent; document.getElementById('userLine').textContent=said; document.getElementById('diffLine').innerHTML=diffWords(orig, said); });
+      document.getElementById('holdToSpeak').addEventListener('click',async()=>{
+        await startCountdown(3);
+        const said=await captureSpeechMock(); if(!said) return;
+        const orig=document.getElementById('origLine').textContent;
+        document.getElementById('userLine').textContent=said;
+        document.getElementById('diffLine').innerHTML=diffWords(orig, said);
+      });
     });
   </script>
 </body>
